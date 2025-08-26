@@ -38,7 +38,6 @@ The file tree should be
 ```
 data
 └── ltcc
-    └── croped_clothes
     └── datalist
         └── query_sc.txt
         └── gallery_sc.txt
@@ -48,8 +47,6 @@ data
         └── gallery_general.txt
         └── train.txt
     └── LTCC_ReID
-    └── templates
-    └── white_shirt.jpg
 └── market
     └── datalist
         └── query.txt
