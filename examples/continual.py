@@ -26,9 +26,7 @@ from reid.datasets import dataset_entry
 from reid.datasets.data_builder_cc import DataBuilder_cc
 from reid.datasets.data_builder_sc_mnt import DataBuilder_sc
 from reid.datasets.data_builder_t2i import DataBuilder_t2i
-from reid.datasets.data_builder_attr import DataBuilder_attr
 from reid.datasets.data_builder_cross import DataBuilder_cross
-from reid.datasets.data_builder_ctcc import DataBuilder_ctcc
 from reid.trainer import TrainerFactory
 from reid.utils.logging import Logger
 from reid.utils.lr_scheduler import WarmupMultiStepLR, WarmupCosineLR
@@ -237,12 +235,6 @@ class Runner(object):
         elif this_task_info.task_name == 'DataBuilder_sc':
             print(f"test loader for task: {this_task_info.task_name}")
             data_builder = DataBuilder_sc(args, this_task_info)
-        elif this_task_info.task_name == 'DataBuilder_attr':
-            print(f"test loader for task: {this_task_info.task_name}")
-            data_builder = DataBuilder_attr(args, this_task_info)
-        elif this_task_info.task_name == 'DataBuilder_ctcc':
-            print(f"test loader for task: {this_task_info.task_name}")
-            data_builder = DataBuilder_ctcc(args, this_task_info)
         elif this_task_info.task_name == 'DataBuilder_t2i':
             print(f"test loader for task: {this_task_info.task_name}")
             data_builder = DataBuilder_t2i(args, this_task_info)
