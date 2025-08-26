@@ -18,7 +18,7 @@ class Evaluator(object):
         super(Evaluator, self).__init__()
         self.model = model
         self.validate_feat = validate_feat
-        json_list = '../Instruct-ReID/data/cuhk_pedes/caption_t2i_v2.json'
+        json_list = '<path-to-data-directory>/data/cuhk_pedes/caption_t2i_v2.json'
         attr_file =  open(json_list, 'r', encoding='utf-8')
         self.attr_dict = json.load(attr_file)
 

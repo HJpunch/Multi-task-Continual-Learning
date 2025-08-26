@@ -10,6 +10,6 @@ sh ./scripts/test.sh \
 	transformer_dualattn_joint \
 	"./logs/transformer_dualattn_joint-${mode}/checkpoints/${checkpoint}.pth.tar" \
 	t2i \
-	"../Instruct-ReID/data/${task}/query_t2i_v2.txt" \
-	"../Instruct-ReID/data/${task}/gallery_t2i_v2.txt" \
-	"../Instruct-ReID/data/${task}"
+	"<path-to-data-directory>/data/${task}/query_t2i_v2.txt" \
+	"<path-to-data-directory>/data/${task}/gallery_t2i_v2.txt" \
+	"<path-to-data-directory>/data/${task}"

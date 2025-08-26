@@ -10,6 +10,6 @@ sh ./scripts/test.sh \
 	transformer_dualattn_joint \
 	"./logs/transformer_dualattn_joint-${mode}/checkpoints/${checkpoint}.pth.tar" \
 	cc \
-	"../Instruct-ReID/data/${task}/datalist/query_cc.txt" \
-	"../Instruct-ReID/data/${task}/datalist/gallery_cc.txt" \
-	"../Instruct-ReID/data/${task}"
+	"<path-to-data-directory>/${task}/datalist/query_cc.txt" \
+	"<path-to-data-directory>/data/${task}/datalist/gallery_cc.txt" \
+	"<path-to-data-directory>/data/${task}"
