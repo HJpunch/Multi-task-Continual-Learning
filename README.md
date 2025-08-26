@@ -33,6 +33,34 @@ download pretrained model [pass_vit_base_full.pth](https://drive.google.com/file
 
 download [pytorch_model.bin](https://huggingface.co/google-bert/bert-base-uncased/blob/main/pytorch_model.bin) to bert-base-uncased
 
+### Prepare data
+The file tree should be
+```
+data
+└── ltcc
+    └── croped_clothes
+    └── datalist
+        └── query_sc.txt
+        └── gallery_sc.txt
+        └── query_cc.txt
+        └── gallery_cc.txt
+        └── query_general.txt
+        └── gallery_general.txt
+        └── train.txt
+    └── LTCC_ReID
+    └── templates
+    └── white_shirt.jpg
+└── market
+    └── datalist
+        └── query.txt
+        └── gallery.txt
+        └── train.txt
+    └── Market-1501
+└── llcm
+    └── LLCM
+    └── query.txt
+    └── gallery.txt
+    └── train.txt
 
 ### Training
 
