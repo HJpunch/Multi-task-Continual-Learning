@@ -9,7 +9,7 @@ export PYTHONPATH=$ROOT:$PYTHONPATH
 GLOG_vmodule=MemcachedClient=-1 \
 
 
-CUDA_VISIBLE_DEVICES=2 python -m examples.continual -a ${ARCH} --seed ${SEED} --margin 0.3 \
+CUDA_VISIBLE_DEVICES=0 python -m examples.continual -a ${ARCH} --seed ${SEED} --margin 0.3 \
 	--num-instances 4 -b 128 -j 8 --warmup-step 1000 --lr 0.00004 --alpha 3 --optimizer AdamW --weight-decay 0.0005 --scheduler cosine_lr \
 	--iters 1 \
 	--logs-dir logs/${ARCH}-${DESC} --config ./scripts/config_ablation5.yaml --data-config scripts/config_continual.yaml \
