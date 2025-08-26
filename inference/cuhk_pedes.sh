@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+mode=$1
+checkpoint=$2
+
+task='cuhk_pedes'  # t2i reid
+
+sh ./scripts/test.sh \
+	transformer_dualattn_joint \
+	"./logs/transformer_dualattn_joint-${mode}/checkpoints/${checkpoint}.pth.tar" \
+	t2i \
+	"../Instruct-ReID/data/${task}/query_t2i_v2.txt" \
+	"../Instruct-ReID/data/${task}/gallery_t2i_v2.txt" \
+	"../Instruct-ReID/data/${task}"

@@ -1,0 +1,12 @@
+*.tar
+*.pth
+*.bin
+**/__pycache__/
+**/*.pyc
+venv/
+env/
+.venv/
+
+
+logs/
+bert-base-uncased/
