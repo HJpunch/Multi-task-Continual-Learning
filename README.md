@@ -58,6 +58,7 @@ data
     └── query.txt
     └── gallery.txt
     └── train.txt
+```
 
 ### Training
 
