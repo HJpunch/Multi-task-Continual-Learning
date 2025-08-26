@@ -81,14 +81,29 @@ class ContinualResults:
                     mAPs[r - 1] = metrics["mAP"]
                     top1s[r - 1] = metrics["top1"]
         return mAPs, top1s
+    
+    def get_average(self):
+        mAP_list = []
+        top1_list = []
+
+        for ds in self.datasets():
+            mAPs, top1s = self.get_series(ds)
+            mAP_list.append(mAPs[-1])
+            top1_list.append(top1s[-1])
+
+        return np.mean(mAP_list), np.mean(top1_list)
 
     # ---------------------------
     # 저장/불러오기
     # ---------------------------
     def save_json(self, path: str) -> None:
+        average_mAP, average_top1 = self.get_average()
+
         payload = {
             "max_rounds": self._max_rounds,
             "data": self._data,
+            "average_mAP:": average_mAP,
+            "average_top1": average_top1
         }
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:

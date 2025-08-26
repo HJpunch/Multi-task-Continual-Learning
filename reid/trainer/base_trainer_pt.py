@@ -14,6 +14,7 @@ from reid.utils.serialization import load_checkpoint, copy_state_dict
 from reid.utils.feature_tools import initial_classifier
 
 import copy
+import torch
 import torch.nn as nn
 
 def set_grad(nets, requires_grad=False):
@@ -136,16 +137,23 @@ class BaseTrainer(object):
 
             self.model.cuda()
 
-            global_centers, bio_centers, clot_centers = initial_classifier(self.model, init_loader, self.this_task_info)
-            self.model.module.classifier.weight.data[add_num:].copy_(global_centers)
-            self.model.module.classifier_f.weight.data[add_num:].copy_(bio_centers)
-            self.model.module.classifier_c.weight.data[add_num:].copy_(clot_centers)
+            if model_last and model_long:
+                global_centers, bio_centers, clot_centers = initial_classifier(self.model, init_loader, self.this_task_info)
+                self.model.module.classifier.weight.data[add_num:].copy_(global_centers)
+                self.model.module.classifier_f.weight.data[add_num:].copy_(bio_centers)
+                self.model.module.classifier_c.weight.data[add_num:].copy_(clot_centers)
+            else:
+                with torch.no_grad():
+                    nn.init.normal_(self.model.module.classifier.weight[add_num:])
+                    nn.init.normal_(self.model.module.classifier_f.weight[add_num:])
+                    nn.init.normal_(self.model.module.classifier_c.weight[add_num:])
+
             self.model.cuda()
 
-        if set_index > 0:
+        if set_index > 0 and model_last is not None:
             model_last.eval()
-            if set_index > 1:
-                model_long.eval()
+        if set_index > 1 and model_long is not None:
+            model_long.eval()
 
 
         self.model.train()
