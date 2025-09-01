@@ -376,6 +376,11 @@ class PASS_Transformer_DualAttn_joint(nn.Module):
             else:
                 fusion_layers.append(copy.deepcopy(self.visual_encoder.blocks[-i]))
         self.fusion = nn.Sequential(*fusion_layers)
+
+        # DKP용 mean, var 계산 layer
+        self.linear_mean = nn.Linear(self.num_features, self.num_features)
+        self.linear_var = nn.Linear(self.num_features, self.num_features)
+        self.relu = nn.ReLU()
         
     def dual_attn(self, bio_feats, clot_feats, project_feats=None, project_feats_down=None):
         bio_class = bio_feats[:, 0:1]
@@ -389,7 +394,7 @@ class PASS_Transformer_DualAttn_joint(nn.Module):
         return bio_fusion, clot_fusion
 
 
-    def forward(self, x, instruction, this_task_info=None, label=None, cam_label=None, view_label=None, forzen=False):
+    def forward(self, x, instruction, this_task_info=None, label=None, cam_label=None, view_label=None, forzen=False, dkp=False):
         # BxNxD
         if self.training:
             if ('attr' in this_task_info.task_name or 'sc' in this_task_info.task_name or 't2i' in this_task_info.task_name or 'cross' in this_task_info.task_name or 'cc' in this_task_info.task_name) and 'ctcc' not in this_task_info.task_name:
@@ -585,6 +590,21 @@ class PASS_Transformer_DualAttn_joint(nn.Module):
             
             f_logits = self.classifier_f(bio_f)
             c_logits = self.classifier_c(clot_f)
+
+            # DKP 용 평균/분산 계산 코드
+            if dkp:
+                tokens = local_feat_all
+                out_mean = tokens.mean(dim=1)
+                out_mean = self.linear_mean(out_mean)
+                out_mean = F.normalize(out_mean, dim=1)
+
+                out_var = tokens.var(dim=1, unbiased=False)
+                out_var = self.linear_var(out_var)
+                out_var = self.relu(out_var) + 1e-4
+                out_var = F.normalize(out_var, dim=1)
+
+                return global_feat, bio_f, clot_f, logits, f_logits, c_logits, text_embeds_s, out_mean, out_var
+
             return global_feat, bio_f, clot_f, logits, f_logits, c_logits, text_embeds_s
             
     def load_param(self, trained_path):

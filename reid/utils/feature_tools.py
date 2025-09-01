@@ -135,3 +135,59 @@ def extract_features_voro(model, data_loader, this_task_info, get_mean_feature=F
         return features_all, labels_all, fnames_all, camids_all, torch.stack(features_mean),labels_named
     else:
         return features_all, labels_all, fnames_all, camids_all
+    
+
+def extract_features_uncertain(model, data_loader, this_task_info, get_mean_feature=False):
+    features_all = []
+    labels_all = []
+    fnames_all = []
+    camids_all = []
+    var_all=[]
+    model.train()
+    
+    with torch.no_grad():
+        for i, inputs in enumerate(data_loader):
+            imgs, instructions, fnames, _, pids, view_ids, cam_ids, indices = inputs
+            inputs = imgs.cuda()
+            targets = pids.cuda()
+            cam_ids = cam_ids.cuda()
+            view_ids = view_ids.cuda()
+            # TODO: train 모드에서 모델이 out_var을 반환하도록 수정.
+            features, *_, out_var = model(inputs, instructions, this_task_info=this_task_info, label=targets, cam_label=cam_ids, view_label=view_ids, dkp=True)
+
+            for fname, feature, pid, cid, var in zip(fnames, features, pids, cam_ids, out_var):
+                features_all.append(feature.detach().cpu())
+                labels_all.append(int(pid.detach().cpu()))
+                fnames_all.append(fname)
+                camids_all.append(cid.detach().cpu())
+                var_all.append(var.detach().cpu())
+
+    if get_mean_feature:
+        features_collect = {}
+        var_collect = {}
+
+        for feature, label, var in zip(features_all, labels_all,var_all):
+            if label in features_collect:
+                features_collect[label].append(feature)
+                var_collect[label].append(var)
+            else:
+                features_collect[label] = [feature]
+                var_collect[label]=[var]
+        labels_named = list(set(labels_all))  # obtain valid features
+        labels_named.sort()
+        features_mean=[]
+        vars_mean=[]
+        for x in labels_named:
+            if x in features_collect.keys():
+                feats=torch.stack(features_collect[x])
+                feat_mean=feats.mean(dim=0)
+                features_mean.append(feat_mean)
+
+                vars_2=(torch.stack(var_collect[x])**2).mean(dim=0)+(feats**2).mean(dim=0)-feat_mean**2
+                vars_mean.append(torch.sqrt(vars_2))
+            else:
+                features_mean.append(torch.zeros_like(features_all[0]))
+                vars_mean.append(torch.zeros_like(var_all[0]))
+        return features_all, labels_all, fnames_all, camids_all, torch.stack(features_mean),labels_named,torch.stack(vars_mean),var_all
+    else:
+        return features_all, labels_all, fnames_all, camids_all

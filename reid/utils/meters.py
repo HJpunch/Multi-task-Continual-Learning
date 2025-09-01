@@ -151,6 +151,8 @@ class ContinualResults:
             ax_map.plot(xs, mAPs, marker="o", label=ds)
             ax_top1.plot(xs, top1s, marker="o", label=ds)
 
+        ax_map.set_ylim(0.0, 1.0)
+        ax_top1.set_ylim(0.0, 1.0)
         ax_map.set_title("mAP")
         ax_top1.set_title("Top-1")
         for ax in axes:

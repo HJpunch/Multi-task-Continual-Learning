@@ -210,3 +210,198 @@ class BaseTrainer(object):
             lr_scheduler.step()
         
         return self.model, model_last, model_long
+    
+    def train_finetune(self,
+                  all_train_loader,
+                  all_init_loader,
+                  all_train_set, 
+                  optimizer, 
+                  lr_scheduler, 
+                  test_loader=None, 
+                  query=None, 
+                  gallery=None,
+                  set_index=0,
+                  ):
+        data_loader = all_train_loader[set_index]
+        num_classes = all_train_set[set_index].num_classes
+
+        self.model.module.classifier = nn.Linear(self.model.module.num_features, num_classes, bias=False)
+        self.model.module.classifier_f = nn.Linear(self.model.module.num_features, num_classes, bias=False)
+        self.model.module.classifier_c = nn.Linear(self.model.module.num_features, num_classes, bias=False)
+
+        with torch.no_grad():
+                    nn.init.normal_(self.model.module.classifier.weight)
+                    nn.init.normal_(self.model.module.classifier_f.weight)
+                    nn.init.normal_(self.model.module.classifier_c.weight)
+
+        self.model.cuda()
+        self.model.train()
+
+        end = time.time()
+        best_mAP, best_top1, best_iter = 0, 0, 0
+
+        for i, inputs in enumerate(data_loader):
+            current_iter = i + 1
+
+            self._refresh_information(current_iter, lr=lr_scheduler.get_lr()[0])
+            self.data_time.update(time.time() - end)
+            # import pdb;pdb.set_trace()
+            loss = self.run_continual(inputs)
+            if self.this_task_info:
+                loss = self.this_task_info.task_weight * loss
+
+            optimizer.zero_grad()
+            if self.fp16:   
+                with amp.scale_loss(loss, optimizer) as scaled_loss:
+                    scaled_loss.backward()
+            else:
+                loss.backward()
+
+            optimizer.step()
+
+            self.batch_time.update(time.time() - end)
+            end = time.time()
+
+            self._logging(current_iter)
+
+            if current_iter % (1 * self.args.save_freq) == 0:
+                if test_loader is not None:
+                    mAP, top1 = self._do_valid(test_loader, query, gallery, self.args.validate_feat)
+                    if best_mAP < mAP:
+                        best_mAP = mAP
+                        best_iter = current_iter
+                    if best_top1 < top1:
+                        best_top1 = top1
+
+                    end = time.time()
+
+
+                if best_iter == current_iter:
+                    save_checkpoint({'state_dict': self.model.state_dict()},
+                                    fpath=osp.join(self.args.logs_dir,
+                                                'checkpoints',
+                                                f'{set_index}_{self.this_task_info.test_task_type}',
+                                                f'checkpoint_{current_iter}.pth.tar'),)
+
+                print('\n * Finished iterations {:3d}. Best iter {:3d}, Best mAP {:4.1%}.\n'
+                      .format(current_iter, best_iter, best_mAP))
+
+            lr_scheduler.step()
+        
+        return self.model
+    
+
+    def train_dkp(self,
+                  all_train_loader,
+                  all_init_loader,
+                  all_train_set, 
+                  optimizer, 
+                  lr_scheduler, 
+                  test_loader=None, 
+                  query=None, 
+                  gallery=None,
+                  set_index=0,
+                  proto_type=None
+                  ):
+        data_loader = all_train_loader[set_index]
+        init_loader = all_init_loader[set_index]
+        num_classes = all_train_set[set_index].num_classes
+
+        if proto_type is not None:
+            proto_type_merge={}
+            steps=list(proto_type.keys())
+            steps.sort()
+            stages=1
+            if stages<len(steps):
+                steps=steps[-stages:]
+
+            proto_type_merge['mean_features']=torch.cat([proto_type[k]['mean_features'] for k in steps]).to('cuda')
+            proto_type_merge['labels'] = torch.tensor([proto_type[k]['labels'] for k in steps]).to(proto_type_merge['mean_features'].device)
+            proto_type_merge['mean_vars'] = torch.cat([proto_type[k]['mean_vars'] for k in steps]).to('cuda')
+        else:
+            proto_type_merge = None
+
+        if set_index <= 1:
+            add_num = 0
+        else:
+            add_num = sum(
+                [all_train_set[i].num_classes for i in range(set_index - 1)]
+            )
+
+        if set_index > 0:
+            add_num = sum([all_train_set[i].num_classes for i in range(set_index)])
+            org_classifier_params = self.model.module.classifier.weight.data
+            self.model.module.classifier = nn.Linear(self.model.module.num_features, add_num + num_classes, bias=False)
+            self.model.module.classifier.weight.data[:add_num].copy_(org_classifier_params)
+
+            org_classifier_params = self.model.module.classifier_f.weight.data
+            self.model.module.classifier_f = nn.Linear(self.model.module.num_features, add_num + num_classes, bias=False)
+            self.model.module.classifier_f.weight.data[:add_num].copy_(org_classifier_params)
+
+            org_classifier_params = self.model.module.classifier_c.weight.data
+            self.model.module.classifier_c = nn.Linear(self.model.module.num_features, add_num + num_classes, bias=False)
+            self.model.module.classifier_c.weight.data[:add_num].copy_(org_classifier_params)
+
+            self.model.cuda()
+
+            global_centers, bio_centers, clot_centers = initial_classifier(self.model, init_loader, self.this_task_info)
+            self.model.module.classifier.weight.data[add_num:].copy_(global_centers)
+            self.model.module.classifier_f.weight.data[add_num:].copy_(bio_centers)
+            self.model.module.classifier_c.weight.data[add_num:].copy_(clot_centers)
+
+        self.model.cuda()
+        self.model.train()
+
+        end = time.time()
+        best_mAP, best_top1, best_iter = 0, 0, 0
+
+        for i, inputs in enumerate(data_loader):
+            current_iter = i + 1
+
+            self._refresh_information(current_iter, lr=lr_scheduler.get_lr()[0])
+            self.data_time.update(time.time() - end)
+            
+            # TODO: run_dkp 구현.
+            loss = self.run_dkp(inputs, add_num, proto_type_merge)
+            if self.this_task_info:
+                loss = self.this_task_info.task_weight * loss
+
+            optimizer.zero_grad()
+            if self.fp16:   
+                with amp.scale_loss(loss, optimizer) as scaled_loss:
+                    scaled_loss.backward()
+            else:
+                loss.backward()
+
+            optimizer.step()
+
+            self.batch_time.update(time.time() - end)
+            end = time.time()
+
+            self._logging(current_iter)
+
+            if current_iter % (1 * self.args.save_freq) == 0:
+                if test_loader is not None:
+                    mAP, top1 = self._do_valid(test_loader, query, gallery, self.args.validate_feat)
+                    if best_mAP < mAP:
+                        best_mAP = mAP
+                        best_iter = current_iter
+                    if best_top1 < top1:
+                        best_top1 = top1
+
+                    end = time.time()
+
+
+                if best_iter == current_iter:
+                    save_checkpoint({'state_dict': self.model.state_dict()},
+                                    fpath=osp.join(self.args.logs_dir,
+                                                'checkpoints',
+                                                f'{set_index}_{self.this_task_info.test_task_type}',
+                                                f'checkpoint_{current_iter}.pth.tar'),)
+
+                print('\n * Finished iterations {:3d}. Best iter {:3d}, Best mAP {:4.1%}.\n'
+                      .format(current_iter, best_iter, best_mAP))
+
+            lr_scheduler.step()
+        
+        return self.model

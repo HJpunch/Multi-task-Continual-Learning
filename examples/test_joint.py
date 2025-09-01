@@ -13,9 +13,7 @@ from torch import nn
 from reid import models
 from reid.datasets.data_builder_cc import DataBuilder_cc
 from reid.datasets.data_builder_sc_mnt import DataBuilder_sc
-from reid.datasets.data_builder_attr import DataBuilder_attr
 from reid.datasets.data_builder_t2i import DataBuilder_t2i
-from reid.datasets.data_builder_ctcc import DataBuilder_ctcc
 from reid.datasets.data_builder_cross import DataBuilder_cross
 from reid.evaluation.evaluators_t import Evaluator as Evaluator_t2i
 from reid.evaluation.evaluators import Evaluator
@@ -34,10 +32,6 @@ def main_worker(args):
         data_builder = DataBuilder_cc(args)
     elif args.test_task_type == 'sc':
         data_builder = DataBuilder_sc(args)
-    elif args.test_task_type == 'attr':
-        data_builder = DataBuilder_attr(args)
-    elif args.test_task_type == 'ctcc':
-        data_builder = DataBuilder_ctcc(args)
     elif args.test_task_type == 't2i':
         data_builder = DataBuilder_t2i(args)
     elif args.test_task_type == 'cross':

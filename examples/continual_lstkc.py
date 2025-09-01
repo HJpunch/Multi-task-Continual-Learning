@@ -45,7 +45,6 @@ from reid.utils.meters import ContinualResults
 
 from scripts.config_continual import task_mapping
 
-
 def configuration():
     parser = argparse.ArgumentParser(description="train simple person re-identification models")
 
@@ -133,8 +132,6 @@ def configuration():
     parser.add_argument('--mse', action='store_true', help="using mse loss instead of KL loss")
     parser.add_argument('--mae', action='store_true', help="using mae loss instead of KL loss")
     parser.add_argument('--js', action='store_true', help="using js-diverigence loss instead of KL loss")
-
-    parser.add_argument('--linear-combination', default=1, help="alpha term for weight linear combination")
 
     args = parser.parse_args()
     with open(args.config) as f:
@@ -355,6 +352,9 @@ class Runner(object):
                 
         model_dicts['extractor'] = model
 
+        model_last = None
+        model_long = None
+        model_old = None
         #######################################################################
         trainer = self.build_trainer(model_dicts, args, this_task_info=all_task_info[0])
 
@@ -363,6 +363,7 @@ class Runner(object):
             print(f"train for {this_task_info.task_name}")
 
             model.module.net_config.test_task_type = this_task_info.test_task_type
+            trainer.model = model
             trainer.this_task_info = this_task_info
             
             test_loader, query, gallery = self.build_validator(args, this_task_info)
@@ -370,26 +371,57 @@ class Runner(object):
             print(f"this_task_info - test_task_type: {this_task_info.test_task_type}")
             print(f"model - test_task_type: {model.module.net_config.test_task_type}")
             
-            model_old = copy.deepcopy(model)
-            model = trainer.train_finetune(all_train_loader,
-                                                all_init_loader,
-                                                all_train_set, 
-                                                optimizer, 
-                                                lr_scheduler, 
-                                                test_loader, 
-                                                query, 
-                                                gallery,
-                                                set_index,
-                                                )
+            model_new, model_last, model_long = trainer.train_continual(all_train_loader,
+                                                                        all_init_loader,
+                                                                        all_train_set, 
+                                                                        optimizer, 
+                                                                        lr_scheduler, 
+                                                                        test_loader, 
+                                                                        query, 
+                                                                        gallery,
+                                                                        set_index,
+                                                                        model_last,
+                                                                        model_long)
             
-            if set_index > 0:
-                model = linear_combination(args, model, model_old, float(args.linear_combination))
-            
-            save_checkpoint({'state_dict': model.state_dict()},
-                            fpath=osp.join(args.logs_dir,
-                                           'checkpoints',
-                                           'model_{}.pth.tar'.format(set_index)),
-                                           )
+            if set_index == 0:
+                model = model_new
+                save_checkpoint({'state_dict': model.state_dict()},
+                                fpath=osp.join(args.logs_dir,
+                                               'checkpoints',
+                                               'model_{}.pth.tar'.format(set_index)),
+                                               )
+            elif set_index == 1:
+                model_old = model_last
+                best_alpha = get_adaptive_alpha(args, model_new, model_last, all_init_loader, this_task_info, set_index)
+                model = linear_combination(args, model_new, model_last, best_alpha)
+                save_checkpoint({'state_dict': model.state_dict()},
+                                fpath=osp.join(args.logs_dir,
+                                               'checkpoints',
+                                               'model_{}.pth.tar'.format(set_index)),
+                                               )
+            else:
+                best_alpha = search_alpha(trainer, 
+                                          model_long, 
+                                          model_last, 
+                                          all_init_loader[set_index], 
+                                          test_loader,
+                                          query,
+                                          gallery,
+                                          args,
+                                          this_task_info)
+                model_old = linear_combination(args, model_long, model_last, best_alpha)
+
+                best_alpha = get_adaptive_alpha(args, model_new, model_old, all_init_loader, this_task_info, set_index)
+                model = linear_combination(args, model_new, model_old, best_alpha)
+                
+                save_checkpoint({'state_dict': model.state_dict()},
+                                fpath=osp.join(args.logs_dir,
+                                               'checkpoints',
+                                               'model_{}.pth.tar'.format(set_index)),
+                                               )
+
+            model_last = copy.deepcopy(model_new)
+            model_long = model_old
 
             # forgetting result 저장
             trainer.model = model
@@ -470,6 +502,98 @@ def count_parameters_num(model):
     print('Number of linear params: %.2fM' % (count_fc / 1e6))
     return count / 1e6, count_fc / 1e6
 
+
+def get_normal_affinity(x,Norm=100):
+    from reid.metric_learning.distance import cosine_similarity
+    pre_matrix_origin=cosine_similarity(x,x)
+    pre_matrix_origin=-100*torch.eye(x.size(0)).to(x.device)+pre_matrix_origin
+    pre_affinity_matrix=F.softmax(pre_matrix_origin*Norm, dim=1)
+    return pre_affinity_matrix
+
+def get_normal_affinity_origin(x,Norm=100):
+    from reid.metric_learning.distance import cosine_similarity
+    pre_matrix_origin=cosine_similarity(x,x)
+    pre_affinity_matrix=F.softmax(pre_matrix_origin*Norm, dim=1)
+    return pre_affinity_matrix
+
+def search_alpha(trainer, model_long, model_last, init_loader, test_loader, query, gallery, args, this_task_info, Norm=10):
+    res={}
+    best_alpha=0.
+    best_score=-1000000.
+    for alpha in torch.arange(0,1.05, 0.1):
+        model_fuse=linear_combination(args, model_long, model_last, alpha)
+
+        features_all_old, labels_all_old, fnames_all, camids_all, features_mean, labels_named, vars_mean = extract_features_proto(model_fuse,
+                                                                                                                                  init_loader,
+                                                                                                                                  this_task_info,
+                                                                                                                                  get_mean_feature=True)  # init_loader is original designed for classifer init
+        matric='mAP' # mAP sim
+        if 'mAP' == matric:
+            # if 'cu'
+            try:
+                # map = trainer._do_valid(test_loader, query, gallery, args.validate_feat)
+                map=fast_eval(features_all_old,labels_all_old, camids_all, args)
+            except:
+                camids_all=list(range(len(camids_all)))
+                # map = trainer._do_valid(test_loader, query, gallery, args.validate_feat)
+                map=fast_eval(features_all_old,labels_all_old, camids_all, args)
+            if map>best_score:
+                best_score=map
+                best_alpha=alpha
+        else:
+            from reid.metric_learning.distance import cosine_similarity
+            features_all_old=torch.stack(features_all_old)
+            labels_all_old=torch.tensor(labels_all_old).cuda()
+            
+
+            sim_matrix=cosine_similarity(features_all_old, features_all_old)   # 距离
+
+            sim_matrix=-(torch.eye(len(sim_matrix))*100).cuda()+sim_matrix    # 对角线变为负无穷
+            
+            sim_matrix=F.softmax(sim_matrix*Norm, dim=1)
+            GT=(labels_all_old.unsqueeze(0)-labels_all_old.unsqueeze(1))==0 # GT矩阵
+
+            score=(sim_matrix*GT.float()-sim_matrix*(1-GT.float())).sum()
+            res[alpha]=score
+
+            if score>best_score:
+                best_alpha=alpha
+                best_score=score
+
+    print("####evaluating results####:", res)
+    print("best alpha:",best_alpha, "best_value:",best_score)
+    # return model_fuse
+    return best_alpha
+
+def get_adaptive_alpha(args, model, model_old, all_init_loader, this_task_info, set_index):
+    init_loader_new = all_init_loader[set_index]
+
+    features_all_new, labels_all, fnames_all, camids_all, features_mean_new, labels_named = extract_features_voro(model,
+                                                                                                          init_loader_new,
+                                                                                                          this_task_info,
+                                                                                                          get_mean_feature=True)
+    features_all_old, _, _, _, features_mean_old, _ = extract_features_voro(model_old,
+                                                                            init_loader_new,
+                                                                            this_task_info,
+                                                                            get_mean_feature=True)
+
+    features_all_new=torch.stack(features_all_new, dim=0)
+    features_all_old=torch.stack(features_all_old,dim=0)
+    Affin_new = get_normal_affinity(features_all_new, args.global_alpha)
+    Affin_old = get_normal_affinity(features_all_old, args.global_alpha)
+
+   
+    
+    # transform similarity to the fusion weight
+    sim=(Affin_new*Affin_old).sum(-1).mean()
+    alpha=sim
+    if args.absolute_delta:
+        Affin_new = get_normal_affinity_origin(features_all_new, args.global_alpha)
+        Affin_old = get_normal_affinity_origin(features_all_old, args.global_alpha)
+        Difference= torch.abs(Affin_new-Affin_old).sum(-1).mean()
+        alpha=float(1-Difference)
+    return alpha
+
 def linear_combination(args, model, model_old, alpha):
     print("*******combining the models with alpha: {}*******".format(alpha))
     '''old model '''
@@ -491,6 +615,7 @@ def linear_combination(args, model, model_old, alpha):
             model_new_state_dict[k][:num_class_old] = alpha * v[:num_class_old] + (1 - alpha) * model_old_state_dict[k][:num_class_old]
     model_new.load_state_dict(model_new_state_dict)
     return model_new
+
 
 class AdamWWithClipDev(AdamW):
     def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8,

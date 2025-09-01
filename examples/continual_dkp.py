@@ -35,13 +35,15 @@ from reid.utils.distributed_utils_pt import dist_init, dist_init_singletask
 from reid.multi_tasks_utils.task_info_pt import get_taskinfo
 from reid.multi_tasks_utils.multi_task_distributed_utils_pt import Multitask_DistModule
 from reid.utils.serialization import load_checkpoint, copy_state_dict
-from reid.utils.feature_tools import extract_features_proto, extract_features_voro
+from reid.utils.feature_tools import extract_features_proto, extract_features_voro, extract_features_uncertain
 
 from easydict import EasyDict
 from reid.models.layers import DataParallel
 from reid.utils.serialization import save_checkpoint
 from reid.evaluation.fast_test import fast_eval
 from reid.utils.meters import ContinualResults
+
+from scripts.config_continual import task_mapping
 
 def configuration():
     parser = argparse.ArgumentParser(description="train simple person re-identification models")
@@ -53,6 +55,7 @@ def configuration():
     # data
     parser.add_argument('--config', default='scripts/config.yaml')
     parser.add_argument('--data-config', type=str, default=None)
+    parser.add_argument('--training-order', type=str, required=True)
     parser.add_argument('--train-list', type=str, required=True)
     parser.add_argument('--validate', action='store_true', help='validation when training')
     parser.add_argument('--validate_feat', type=str, default='fusion', choices = ['person', 'clothes','fusion'])
@@ -251,24 +254,49 @@ class Runner(object):
         sys.stdout = Logger(osp.join(args.logs_dir, 'log.txt'))
         print("==========\nArgs:{}\n==========".format(args))
 
-        if args.data_config is not None:
-            tasks = args.data_config['tasks']
-            all_task_info = []
-            loss_weight_sum = float(np.sum(np.array([task['loss_weight'] for task in tasks.values()])))
+        # if args.data_config is not None:
+        #     tasks = args.data_config['tasks']
+        #     all_task_info = []
+        #     loss_weight_sum = float(np.sum(np.array([task['loss_weight'] for task in tasks.values()])))
 
-            for i, task in enumerate(tasks.values()):
+        #     for i, task in enumerate(tasks.values()):
+        #         this_task_info = EasyDict()
+        #         this_task_info.task_id = i
+        #         this_task_info.task_name = task['task_name']
+        #         this_task_info.task_weight = float(tasks[this_task_info.task_id]['loss_weight']) / loss_weight_sum
+        #         this_task_info.train_file_path = task.get('train_file_path', '')
+        #         this_task_info.root_path = task.get('root_path', '')
+        #         this_task_info.task_spec = task.get('task_spec', '')
+        #         this_task_info.attt_file = task.get('attt_file', '')
+        #         this_task_info.query_list = task.get('query_list', '')
+        #         this_task_info.gallery_list = task.get('gallery_list', '')
+        #         this_task_info.test_task_type = task.get('test_task_type', '')
+        #         this_task_info.dataset_name = task.get('dataset_name', '')
+
+        #         this_task_info.task_root_rank = 0 
+        #         this_task_info.task_rank = 0
+        #         this_task_info.task_size = 1
+
+        #         all_task_info.append(this_task_info)
+
+        if args.training_order is not None:
+            training_order = args.training_order.split('-')
+            all_task_info = []
+            loss_weight_sum = float(np.sum(np.array([task_mapping[task]['loss_weight'] for task in training_order])))
+
+            for i, task in enumerate(training_order):
                 this_task_info = EasyDict()
                 this_task_info.task_id = i
-                this_task_info.task_name = task['task_name']
-                this_task_info.task_weight = float(tasks[this_task_info.task_id]['loss_weight']) / loss_weight_sum
-                this_task_info.train_file_path = task.get('train_file_path', '')
-                this_task_info.root_path = task.get('root_path', '')
-                this_task_info.task_spec = task.get('task_spec', '')
-                this_task_info.attt_file = task.get('attt_file', '')
-                this_task_info.query_list = task.get('query_list', '')
-                this_task_info.gallery_list = task.get('gallery_list', '')
-                this_task_info.test_task_type = task.get('test_task_type', '')
-                this_task_info.dataset_name = task.get('dataset_name', '')
+                this_task_info.task_name = task_mapping[task]['task_name']
+                this_task_info.task_weight = float(task_mapping[task]['loss_weight']) / loss_weight_sum
+                this_task_info.train_file_path = task_mapping[task].get('train_file_path', '')
+                this_task_info.root_path = task_mapping[task].get('root_path', '')
+                this_task_info.task_spec = task_mapping[task].get('task_spec', '')
+                this_task_info.attt_file = task_mapping[task].get('attt_file', '')
+                this_task_info.query_list = task_mapping[task].get('query_list', '')
+                this_task_info.gallery_list = task_mapping[task].get('gallery_list', '')
+                this_task_info.test_task_type = task_mapping[task].get('test_task_type', '')
+                this_task_info.dataset_name = task_mapping[task].get('dataset_name', '')
 
                 this_task_info.task_root_rank = 0 
                 this_task_info.task_rank = 0
@@ -331,6 +359,20 @@ class Runner(object):
         trainer = self.build_trainer(model_dicts, args, this_task_info=all_task_info[0])
 
         for set_index in range(0, len(all_task_info)):
+            if set_index > 0:
+                features_all_old, labels_all_old,features_mean, labels_named,vars_mean,vars_all = obtain_old_types(all_init_loader, set_index, model, all_task_info)
+                proto_type={}
+                proto_type[set_index-1]={
+                    "features_all_old":features_all_old,
+                    "labels_all_old":labels_all_old,
+                    'mean_features':features_mean,
+                    'labels':labels_named,
+                    'mean_vars':vars_mean,
+                    "vars_all":vars_all
+                    }
+            else:
+                proto_type = None
+
             this_task_info = all_task_info[set_index]
             print(f"train for {this_task_info.task_name}")
 
@@ -342,60 +384,31 @@ class Runner(object):
 
             print(f"this_task_info - test_task_type: {this_task_info.test_task_type}")
             print(f"model - test_task_type: {model.module.net_config.test_task_type}")
-            
-            model_new, model_last, model_long = trainer.train_continual(all_train_loader,
-                                                                        all_init_loader,
-                                                                        all_train_set, 
-                                                                        optimizer, 
-                                                                        lr_scheduler, 
-                                                                        test_loader, 
-                                                                        query, 
-                                                                        gallery,
-                                                                        set_index,
-                                                                        model_last,
-                                                                        model_long)
-            
-            if set_index == 0:
-                model = model_new
-                save_checkpoint({'state_dict': model.state_dict()},
-                                fpath=osp.join(args.logs_dir,
-                                               'checkpoints',
-                                               'model_{}.pth.tar'.format(set_index)),
-                                               )
-            elif set_index == 1:
-                model_old = model_last
-                best_alpha = get_adaptive_alpha(args, model_new, model_last, all_init_loader, this_task_info, set_index)
-                model = linear_combination(args, model_new, model_last, best_alpha)
-                save_checkpoint({'state_dict': model.state_dict()},
-                                fpath=osp.join(args.logs_dir,
-                                               'checkpoints',
-                                               'model_{}.pth.tar'.format(set_index)),
-                                               )
-            else:
-                best_alpha = search_alpha(trainer, 
-                                          model_long, 
-                                          model_last, 
-                                          all_init_loader[set_index], 
-                                          test_loader,
-                                          query,
-                                          gallery,
-                                          args,
-                                          this_task_info)
-                model_old = linear_combination(args, model_new, model_last, best_alpha)
 
-                best_alpha = get_adaptive_alpha(args, model_new, model_old, all_init_loader, this_task_info, set_index)
-                model = linear_combination(args, model_long, model_last, best_alpha)
-                
-                save_checkpoint({'state_dict': model.state_dict()},
+            model_old = copy.deepcopy(model)
+            model = trainer.train_dkp(all_train_loader,
+                              all_init_loader,
+                              all_train_set,
+                              optimizer,
+                              lr_scheduler,
+                              test_loader,
+                              query,
+                              gallery,
+                              set_index,
+                              proto_type
+                              )
+            
+            if set_index > 0:
+                model = linear_combination(args, model, model_old, 0.5)
+
+            save_checkpoint({'state_dict': model.state_dict()},
                                 fpath=osp.join(args.logs_dir,
                                                'checkpoints',
                                                'model_{}.pth.tar'.format(set_index)),
                                                )
-
-            model_last = copy.deepcopy(model_new)
-            model_long = model_old
 
             # forgetting result 저장
+            trainer.model = model
             for task in all_task_info[:set_index+1]:
                 test_loader, query, gallery = self.build_validator(args, task)
                 map, top1 = trainer._do_valid(test_loader, query, gallery, args.validate_feat)
@@ -472,6 +485,23 @@ def count_parameters_num(model):
     print('Number of conv/bn params: %.2fM' % (count / 1e6))
     print('Number of linear params: %.2fM' % (count_fc / 1e6))
     return count / 1e6, count_fc / 1e6
+
+
+def obtain_old_types(all_init_loader, set_index, model, all_task_info):
+    init_loader_old = all_init_loader[set_index - 1]
+    this_task_info = all_task_info[set_index - 1]
+    features_all_old, labels_all_old, fnames_all, camids_all, features_mean, labels_named, vars_mean,vars_all = extract_features_uncertain(model,
+                                                                                                                  init_loader_old,
+                                                                                                                  this_task_info,
+                                                                                                                  get_mean_feature=True)  # init_loader is original designed for classifer init
+    features_all_old = torch.stack(features_all_old)
+    labels_all_old = torch.tensor(labels_all_old).to(features_all_old.device)
+    features_all_old.requires_grad = False
+    return features_all_old, labels_all_old, features_mean, labels_named,vars_mean,vars_all
+
+
+
+
 
 
 def get_normal_affinity(x,Norm=100):

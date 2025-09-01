@@ -18,6 +18,7 @@ class GeneralTransformerTrainer_joint(BaseTrainer):
         self.ce_loss = CrossEntropyLoss().cuda()
         self.triplet_loss = TripletLoss(margin=self.args.margin).cuda()
         self.KLDivLoss = KLDivLoss( reduction = "none")
+        self.KLDivLoss_dkp = KLDivLoss( reduction = "batchmean")
         self.MSE = MSELoss(size_average=None, reduce=None, reduction='mean')
         self.MAE = L1Loss(size_average=None, reduce=None, reduction='mean')
 
@@ -90,7 +91,7 @@ class GeneralTransformerTrainer_joint(BaseTrainer):
         view_ids = view_ids.cuda()
         return inputs, instructions, targets, cam_ids, view_ids
 
-    def run_continual(self, inputs, add_num, model_last=None, model_long=None):
+    def run_continual(self, inputs, add_num=0, model_last=None, model_long=None):
         if 't2i' in self.this_task_info.task_name:
             inputs, instructions, targets, cam_ids, view_ids = self._parse_data(inputs)
             img_feat, text_feat, vl_f, vl_f_n, vl_output, vl_labels, loss_cl, loss_pitm, loss_mlm, loss_mrtd = self.model(inputs, instructions, this_task_info=self.this_task_info, label=targets, cam_label=cam_ids, view_label=view_ids)
@@ -202,6 +203,121 @@ class GeneralTransformerTrainer_joint(BaseTrainer):
                 if 'bio' in self.args.fusion_branch and 'clot' in self.args.fusion_branch:
                     loss = ratio_rate * loss_ce / 2 + ratio_rate * self.args.alpha * loss_tr / 2 + loss_ce_biometric + self.args.alpha * loss_tr_biometric
                     loss += af_loss
+                else:
+                    loss = loss_ce + self.args.alpha * loss_tr + loss_ce_biometric + loss_tr_biometric
+            else:
+                if 'bio' in self.args.fusion_branch and 'clot' in self.args.fusion_branch:
+                    loss = loss_ce / 2 + self.args.alpha * loss_tr / 2  
+                else:
+                    loss = loss_ce + self.args.alpha * loss_tr 
+
+            self.losses_ce.update(loss_ce.item())
+            self.losses_tr.update(loss_tr.item())
+            if self.args.fusion_loss=='all':
+                self.losses_bme.update(loss_ce_biometric.item())
+            if 'bio' in self.args.fusion_branch:
+                if isinstance(logits2, list):
+                    prec, = accuracy(logits2[0].data, targets.data)
+                else:
+                    prec, = accuracy(logits2.data, targets.data)
+            else:
+                if isinstance(logits3, list):
+                    prec, = accuracy(logits3[0].data, targets.data)
+                else:
+                    prec, = accuracy(logits3.data, targets.data)
+            prec = prec[0]
+            self.precisions.update(prec)
+        return loss
+    
+    def run_dkp(self, inputs, add_num=0, proto_type_merge=None):        
+        if 't2i' in self.this_task_info.task_name:
+            inputs, instructions, targets, cam_ids, view_ids = self._parse_data(inputs)
+            img_feat, text_feat, vl_f, vl_f_n, vl_output, vl_labels, loss_cl, loss_pitm, loss_mlm, loss_mrtd = self.model(inputs, instructions, this_task_info=self.this_task_info, label=targets, cam_label=cam_ids, view_label=view_ids)
+            
+            loss_ce_biometric = loss_mlm + loss_mrtd
+            loss_ce_vl = loss_pitm
+            
+            loss = 0.5*loss_cl + loss_ce_vl + loss_mlm + 0.5*loss_mrtd
+            
+            self.losses_ce.update(loss_ce_vl.item())
+            self.losses_tr.update(loss_cl.item())
+            self.losses_bme.update(loss_ce_biometric.item())
+            prec, = accuracy(vl_output.data, vl_labels.data)
+            
+            prec = prec[0]
+            self.precisions.update(prec)
+        else:
+            inputs, instructions, targets, cam_ids, view_ids = self._parse_data(inputs)
+            targets += add_num
+
+            feat, bio_f, clot_f, logits1, logits2, logits3, clot_feats_s, out_mean, out_var  = self.model(inputs, instructions, this_task_info=self.this_task_info, label=targets, cam_label=cam_ids, view_label=view_ids, dkp=True)
+            if self.args.fusion_loss=='all':
+                if isinstance(logits1, list):
+                    ID_LOSS = [self.ce_loss(scor, targets) for scor in logits1[1:]]
+                    ID_LOSS = sum(ID_LOSS) / len(ID_LOSS)
+                    loss_ce_biometric = 0.5 * ID_LOSS + 0.5 * self.ce_loss(logits1[0], targets)
+                else:
+                    loss_ce_biometric = self.ce_loss(logits1, targets)
+            if isinstance(feat, list):
+                TRI_LOSS = [self.triplet_loss(feats, targets, clot_feats_s)[0] for feats in feat[1:]]
+                TRI_LOSS = sum(TRI_LOSS) / len(TRI_LOSS)
+                loss_tr_biometric = 0.5 * TRI_LOSS + 0.5 * self.triplet_loss(feat[0], targets, clot_feats_s)[0]
+            else:
+                loss_tr_biometric = self.triplet_loss(feat, targets, clot_feats_s)[0]
+            loss_ce = 0
+            loss_tr = 0
+            if 'bio' in self.args.fusion_branch:
+                if isinstance(logits2, list):
+                    ID_LOSS = [self.ce_loss(scor, targets) for scor in logits2[1:]]
+                    ID_LOSS = sum(ID_LOSS) / len(ID_LOSS)
+                    loss_ce += 0.5 * ID_LOSS + 0.5 * self.ce_loss(logits2[0], targets)
+                else:
+                    loss_ce+=self.ce_loss(logits2, targets)
+                if isinstance(bio_f, list):
+                    TRI_LOSS = [self.triplet_loss(feats, targets, clot_feats_s)[0] for feats in bio_f[1:]]
+                    TRI_LOSS = sum(TRI_LOSS) / len(TRI_LOSS)
+                    loss_tr += 0.5 * TRI_LOSS + 0.5 * self.triplet_loss(bio_f[0], targets, clot_feats_s)[0]
+                else:
+                    loss_tr+=self.triplet_loss(bio_f, targets, clot_feats_s)[0]
+                    
+            if 'clot' in self.args.fusion_branch:
+                if isinstance(logits3, list):
+                    ID_LOSS = [self.ce_loss(scor, targets) for scor in logits3[1:]]
+                    ID_LOSS = sum(ID_LOSS) / len(ID_LOSS)
+                    loss_ce += 0.5 * ID_LOSS + 0.5 * self.ce_loss(logits3[0], targets)
+                else:
+                    loss_ce+=self.ce_loss(logits3, targets)
+                if isinstance(clot_f, list):
+                    TRI_LOSS = [self.triplet_loss(feats, targets, clot_feats_s)[0] for feats in clot_f[1:]]
+                    TRI_LOSS = sum(TRI_LOSS) / len(TRI_LOSS)
+                    loss_tr += 0.5 * TRI_LOSS + 0.5 * self.triplet_loss(clot_f[0], targets, clot_feats_s)[0]
+                else:
+                    loss_tr+=self.triplet_loss(clot_f, targets, clot_feats_s)[0]
+
+            
+            divergence=0.                       
+            if proto_type_merge is not None:
+                features_mean = proto_type_merge['mean_features']
+                center_feat=feat  # obtain the center feature
+                Affinity_matrix_new = self.get_normal_affinity(center_feat, 0.1) # obtain the affinity matrix
+                features_var = proto_type_merge['mean_vars']    # obtain the prototype strandard variances
+                noises = torch.randn(features_mean.size()).to(features_mean.device) # generate gaussian noise
+                samples = noises * features_var + features_mean # obtain noised sample
+                samples = F.normalize(samples, dim=1)   # normalize the sample
+                s_features_old = cosine_similarity(center_feat, samples)    # obtain the new-old relation
+                s_features_old = F.softmax(s_features_old / 0.1, dim=1)  # normalize the relation
+
+                Affinity_matrix_old = self.get_normal_affinity(s_features_old, 0.1)  # obtain the affinity matrix under the prototype view
+                Affinity_matrix_new_log = torch.log(Affinity_matrix_new)
+                divergence+=self.KLDivLoss_dkp(Affinity_matrix_new_log, Affinity_matrix_old)
+
+            AF_weight = 0.1
+
+            ratio_rate = 1.0
+            if self.args.fusion_loss=='all':
+                if 'bio' in self.args.fusion_branch and 'clot' in self.args.fusion_branch:
+                    loss = ratio_rate * loss_ce / 2 + ratio_rate * self.args.alpha * loss_tr / 2 + loss_ce_biometric + self.args.alpha * loss_tr_biometric
+                    loss += divergence * AF_weight
                 else:
                     loss = loss_ce + self.args.alpha * loss_tr + loss_ce_biometric + loss_tr_biometric
             else:
